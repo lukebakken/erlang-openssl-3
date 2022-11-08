@@ -18,6 +18,7 @@ ENV OTP_SOURCE_SHA256="5442dea694e7555d479d80bc81f1428020639c258f8e40b2052732d1c
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
     apt-get update; \
+    apt-get upgrade --yes; \
 	apt-get install --yes --no-install-recommends \
 		autoconf \
         build-essential \
@@ -29,16 +30,20 @@ RUN set -eux; \
 		libncurses5-dev \
 		make \
         tzdata \
-		wget
+		wget \
+        vim-tiny
 
 RUN set -eux; \
-	OPENSSL_SOURCE_URL="https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"; \
+	OPENSSL_CONFIG_DIR=/usr/local/etc/ssl; \
 	OPENSSL_PATH="/usr/local/src/openssl-$OPENSSL_VERSION"; \
+	OPENSSL_SOURCE_URL="https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"; \
 	wget --progress dot:giga --output-document "$OPENSSL_PATH.tar.gz.asc" "$OPENSSL_SOURCE_URL.asc"; \
 	wget --progress dot:giga --output-document "$OPENSSL_PATH.tar.gz" "$OPENSSL_SOURCE_URL"
 
 RUN set -eux; \
+	OPENSSL_CONFIG_DIR=/usr/local/etc/ssl; \
 	OPENSSL_PATH="/usr/local/src/openssl-$OPENSSL_VERSION"; \
+	OPENSSL_SOURCE_URL="https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"; \
 	export GNUPGHOME="$(mktemp -d)"; \
 	for key in $OPENSSL_PGP_KEY_IDS; do \
 		gpg --batch --keyserver "$PGP_KEYSERVER" --recv-keys "$key"; \
@@ -60,35 +65,32 @@ RUN set -eux; \
     echo "$OTP_SOURCE_SHA256 *$OTP_PATH.tar.gz" | sha256sum --check --strict -; \
     tar --extract --file "$OTP_PATH.tar.gz" --directory "$OTP_PATH" --strip-components 1
 
+RUN set -eux; \
+	OPENSSL_CONFIG_DIR=/usr/local/etc/ssl; \
+	OPENSSL_PATH="/usr/local/src/openssl-$OPENSSL_VERSION"; \
+	OPENSSL_SOURCE_URL="https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"; \
+	cd "$OPENSSL_PATH"; \
+	DEB_HOST_MULTIARCH="$(dpkg-architecture --query DEB_HOST_MULTIARCH)"; \
+	CONFIGURE_ARG="$(echo "$DEB_HOST_MULTIARCH" | awk -F- '{ print($2 "-" $1) }')"; \
+	./Configure LIST | grep -E "^$CONFIGURE_ARG$"; \
+	./Configure "$CONFIGURE_ARG" \
+		no-deprecated \
+		enable-fips \
+        --api=3.0 \
+		--openssldir="$OPENSSL_CONFIG_DIR" \
+		--libdir="lib/$DEB_HOST_MULTIARCH" \
+		-Wl,-rpath=/usr/local/lib \
+	; \
+	make -j "$(getconf _NPROCESSORS_ONLN)"; \
+	make install_sw install_ssldirs install_fips; \
+	cd ..; \
+	rm -rf "$OPENSSL_PATH"*; \
+	ldconfig; \
+	rmdir "$OPENSSL_CONFIG_DIR/certs" "$OPENSSL_CONFIG_DIR/private"; \
+	ln -sf /etc/ssl/certs /etc/ssl/private "$OPENSSL_CONFIG_DIR"; \
+	openssl version
+
 ENTRYPOINT ["/bin/sh"]
-### # Configure OpenSSL for compilation
-### 	cd "$OPENSSL_PATH"; \
-### # without specifying "--libdir", Erlang will fail during "crypto:supports()" looking for a "pthread_atfork" function that doesn't exist (but only on arm32v7/armhf??)
-### 	debMultiarch="$(dpkg-architecture --query DEB_HOST_MULTIARCH)"; \
-### # OpenSSL's "config" script uses a lot of "uname"-based target detection...
-### 	MACHINE="$(dpkg-architecture --query DEB_BUILD_GNU_CPU)" \
-### 	RELEASE="4.x.y-z" \
-### 	SYSTEM='Linux' \
-### 	BUILD='???' \
-### 	./config \
-### 		no-deprecated \
-### 		enable-fips \
-### 		--openssldir="$OPENSSL_CONFIG_DIR" \
-### 		--libdir="lib/$debMultiarch" \
-### # add -rpath to avoid conflicts between our OpenSSL's "libssl.so" and the libssl package by making sure /usr/local/lib is searched first (but only for Erlang/OpenSSL to avoid issues with other tools using libssl; https://github.com/docker-library/rabbitmq/issues/364)
-### 		-Wl,-rpath=/usr/local/lib \
-### 	; \
-### # Compile, install OpenSSL, verify that the command-line works & development headers are present
-### 	make -j "$(getconf _NPROCESSORS_ONLN)"; \
-### 	make install_sw install_ssldirs install_fips; \
-### 	cd ..; \
-### 	rm -rf "$OPENSSL_PATH"*; \
-### 	ldconfig; \
-### # use Debian's CA certificates
-### 	rmdir "$OPENSSL_CONFIG_DIR/certs" "$OPENSSL_CONFIG_DIR/private"; \
-### 	ln -sf /etc/ssl/certs /etc/ssl/private "$OPENSSL_CONFIG_DIR"; \
-### # smoke test
-### 	openssl version; \
 ### 	\
 ### 	OTP_SOURCE_URL="https://github.com/erlang/otp/releases/download/OTP-$OTP_VERSION/otp_src_$OTP_VERSION.tar.gz"; \
 ### 	OTP_PATH="/usr/local/src/otp-$OTP_VERSION"; \
